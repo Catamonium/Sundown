@@ -44,7 +44,7 @@ or build from source. For AMD GPU acceleration on Windows, build with Vulkan:
 cmake -DGGML_VULKAN=1 -B build
 cmake --build build --config Release
 ```
-Place `main.exe` (or `whisper-cli.exe`) and all `.dll` files into the `Whisper/` folder.
+Unzip the release archive (or copy the build output) directly into the `Whisper/` folder.
 
 **Step 2 — Download a model**
 
