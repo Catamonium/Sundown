@@ -1,0 +1,10 @@
+streamlink
+yt-dlp
+requests
+# Transcription: whisper.cpp (external binary — NOT a pip package)
+# Download: https://github.com/ggerganov/whisper.cpp
+# Build with Vulkan (AMD GPU): cmake -DGGML_VULKAN=1 ..
+# Models: https://huggingface.co/ggerganov/whisper.cpp  (ggml-small.bin recommended)
+ffmpeg-python
+numpy
+librosa

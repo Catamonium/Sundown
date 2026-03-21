@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:dev.twitch.tv)",
+      "WebFetch(domain:streamlink.github.io)"
+    ]
+  }
+}

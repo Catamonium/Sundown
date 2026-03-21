@@ -1,0 +1,56 @@
+# ── Whisper binaries and models ─────────────────────────────
+# Download whisper.cpp from https://github.com/ggerganov/whisper.cpp
+# Place binary and DLLs in Whisper/ and models in Whisper/models/
+Whisper/*.exe
+Whisper/*.dll
+Whisper/models/*.bin
+Whisper/models/*.bin.part
+
+# Keep the folder structure
+!Whisper/.gitkeep
+!Whisper/models/.gitkeep
+
+# ── User data ────────────────────────────────────────────────
+downloads/
+clips/
+input/
+
+# ── Sensitive config ─────────────────────────────────────────
+configuration/twitch_credentials.json
+configuration/comedy_memory.json
+configuration/transcript_cache/
+
+# ── Training clips (user-provided, not for the repo) ─────────
+training/*.mp4
+training/*.mkv
+training/*.mov
+training/*.avi
+training/*.ts
+training/*.flv
+
+# Keep training folder in repo
+!training/.gitkeep
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
