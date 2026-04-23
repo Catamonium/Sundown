@@ -16,6 +16,11 @@ import trainer as _trainer
 
 import shutil as _shutil
 
+try:
+    import logger as _logger
+except ImportError:
+    _logger = None  # type: ignore[assignment]
+
 # ============================================================
 # Folders
 # ============================================================
@@ -52,17 +57,22 @@ def _find_whisper_cpp() -> str | None:
 
     Search order:
     1. WHISPER_CPP_PATH environment variable
-    2. project_root/Whisper/main.exe  (primary location)
-    3. project_root/Whisper/build/bin/main.exe
+    2. project_root/Whisper/whisper-cli.exe  (current whisper.cpp naming)
+    3. project_root/Whisper/main.exe         (legacy whisper.cpp naming)
+    4. build/ subdirectory variants of both names
     """
     env = os.environ.get("WHISPER_CPP_PATH", "").strip()
     if env and os.path.isfile(env):
         return env
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     candidates = [
+        os.path.join(root, "Whisper", "whisper-cli.exe"),
         os.path.join(root, "Whisper", "main.exe"),
+        os.path.join(root, "Whisper", "build", "bin", "whisper-cli.exe"),
         os.path.join(root, "Whisper", "build", "bin", "main.exe"),
+        os.path.join(root, "Whisper", "whisper-cli"),
         os.path.join(root, "Whisper", "main"),
+        os.path.join(root, "Whisper", "build", "bin", "whisper-cli"),
         os.path.join(root, "Whisper", "build", "bin", "main"),
     ]
     for c in candidates:
@@ -245,7 +255,6 @@ def _save_transcript_cache(video_path: str, segments: list[dict]) -> None:
 def _transcribe_full_vod(
     wav_path: str,
     model_name: str,
-    device: str,
     language: str,
     video_path: str,
     use_cache: bool,
@@ -263,7 +272,7 @@ def _transcribe_full_vod(
             return cached
     try:
         _, segments = _run_whisper(
-            wav_path, model_name, device=device, language=language, verbose=True
+            wav_path, model_name, language=language, verbose=True
         )
         segments = segments or []
         if use_cache and segments:
@@ -393,7 +402,6 @@ def _whisper_on_windows(
     sr: int,
     windows: list[tuple[float, float, list[str]]],
     model_name: str,
-    device: str,
     language: str,
     tmp_dir: str,
     video_path: str,
@@ -416,23 +424,7 @@ def _whisper_on_windows(
         cached = _load_transcript_cache(video_path)
         if cached is not None:
             print("[INFO] Whisper transcript cache hit — skipping transcription.")
-            clip_keywords = ["clip it", "clip that", "clipeenlo", "clipeen", "clipa eso"]
-            for seg in cached:
-                text  = seg.get("text", "").lower()
-                start = seg.get("start", 0.0)
-                for kw in clip_keywords:
-                    if kw in text:
-                        all_kw_triggers.append(
-                            Trigger(start, "keyword", f'Keyword detected: "{kw}"'))
-                        break
-            for seg in cached:
-                text  = seg.get("text", "").lower()
-                start = seg.get("start", 0.0)
-                for cw in _COMEDY_WORDS:
-                    if cw in text:
-                        all_kw_triggers.append(
-                            Trigger(start, "comedy_keyword", f'Comedy keyword: "{cw}"'))
-                        break
+            all_kw_triggers = _scan_keywords(cached)
             print(f"[INFO] Cached keyword scan: {len(all_kw_triggers)} hit(s).")
             return all_kw_triggers, cached
 
@@ -442,7 +434,7 @@ def _whisper_on_windows(
     for idx, (start, end, _labels) in enumerate(windows):
         slice_samples = samples[int(start * sr): int(end * sr)]
         slice_wav = _write_temp_wav(slice_samples, sr, tmp_dir, prefix=f"w{idx}_")
-        kw, segs = _run_whisper(slice_wav, model_name, device=device,
+        kw, segs = _run_whisper(slice_wav, model_name,
                                 language=language, verbose=False)
 
         # Overwrite single line with \r progress bar
@@ -739,16 +731,12 @@ def _rms_rise_detection(
     return triggers
 
 
-def _resolve_whisper_device(setting: str) -> str:
-    """Kept for API compatibility. whisper.cpp handles device selection internally."""
-    return "whispercpp"
 
 
 def _run_whisper(
     wav_path: str,
     model_name: str,
     keywords: list[str] | None = None,
-    device: str = "cpu",          # kept for signature compatibility, ignored
     language: str = "auto",
     verbose: bool = True,
 ) -> tuple[list[Trigger], list[dict]]:
@@ -761,7 +749,7 @@ def _run_whisper(
     which shows its own progress bar instead.
     """
     if keywords is None:
-        keywords = ["clip it", "clip that", "clipeenlo", "clipeen", "clipa eso"]
+        keywords = _CLIP_KEYWORDS
 
     # ── Resolve binary and model ───────────────────────────────────────────
     binary = _find_whisper_cpp()
@@ -769,7 +757,7 @@ def _run_whisper(
         if verbose:
             print(
                 "[ERROR] whisper.cpp binary not found. Transcription disabled.\n"
-                "        Place main.exe in: AutoClipper/Whisper/\n"
+                "        Place whisper-cli.exe (or main.exe) in: Whisper/\n"
                 "        Or set WHISPER_CPP_PATH env var to the binary path."
             )
         return [], []
@@ -780,7 +768,7 @@ def _run_whisper(
             print(
                 f"[ERROR] whisper.cpp model 'ggml-{model_name}.bin' not found.\n"
                 f"        Download from: https://huggingface.co/ggerganov/whisper.cpp\n"
-                f"        Place in: AutoClipper/Whisper/models/\n"
+                f"        Place in: Whisper/models/\n"
                 f"        Or set WHISPER_CPP_MODELS_DIR env var."
             )
         return [], []
@@ -845,21 +833,7 @@ def _run_whisper(
         })
 
     # ── Keyword / comedy scan ──────────────────────────────────────────────
-    triggers: list[Trigger] = []
-    for seg in segments:
-        text  = seg.get("text", "").lower()
-        start = seg.get("start", 0.0)
-        for kw in keywords:
-            if kw in text:
-                triggers.append(Trigger(start, "keyword", f'Keyword detected: "{kw}"'))
-                break
-    for seg in segments:
-        text  = seg.get("text", "").lower()
-        start = seg.get("start", 0.0)
-        for cw in _COMEDY_WORDS:
-            if cw in text:
-                triggers.append(Trigger(start, "comedy_keyword", f'Comedy keyword: "{cw}"'))
-                break
+    triggers = _scan_keywords(segments, keywords)
     if verbose:
         print(f"[INFO] whisper.cpp keyword scan: {len(triggers)} hit(s) found.")
     return triggers, segments
@@ -1023,6 +997,37 @@ _SWEAR_WORDS: list[str] = [
     # Italian
     "cazzo", "vaffanculo", "merda",
 ]
+
+_CLIP_KEYWORDS: list[str] = ["clip it", "clip that", "clipeenlo", "clipeen", "clipa eso"]
+
+
+def _scan_keywords(
+    segments: list[dict],
+    keywords: list[str] | None = None,
+) -> list[Trigger]:
+    """Scan transcript segments for clip keywords and comedy keywords.
+
+    Returns Trigger objects for 'keyword' (clip commands) and
+    'comedy_keyword' (comedy signal words) matches.
+    """
+    if keywords is None:
+        keywords = _CLIP_KEYWORDS
+    triggers: list[Trigger] = []
+    for seg in segments:
+        text  = seg.get("text", "").lower()
+        start = seg.get("start", 0.0)
+        for kw in keywords:
+            if kw in text:
+                triggers.append(Trigger(start, "keyword", f'Keyword detected: "{kw}"'))
+                break
+    for seg in segments:
+        text  = seg.get("text", "").lower()
+        start = seg.get("start", 0.0)
+        for cw in _COMEDY_WORDS:
+            if cw in text:
+                triggers.append(Trigger(start, "comedy_keyword", f'Comedy keyword: "{cw}"'))
+                break
+    return triggers
 
 
 def _chat_velocity_detection(
@@ -1560,24 +1565,6 @@ def _trim_to_peak(
     return new_start, new_end
 
 
-def _raw_comedy_score(labels: list[str]) -> float:
-    """Compute a raw comedy signal from window trigger labels.
-
-    Combines the five comedy-specific detector sources into a [0, 1] score.
-    Swear (30%) + Scream (25%) + Nonsense/VoiceCrack (20%) + Pre-silence (15%)
-    + Chat spike (10%).  Old comedy arc / laughter triggers still contribute
-    to diversity_norm in _score_windows.
-    """
-    return (
-        0.30 * (1.0 if any("swear"        in lbl for lbl in labels) else 0.0)
-        + 0.25 * (1.0 if any("scream"       in lbl for lbl in labels) else 0.0)
-        + 0.20 * (1.0 if any("nonsense"     in lbl or "voice_crack" in lbl
-                              for lbl in labels) else 0.0)
-        + 0.15 * (1.0 if any("pre_silence"  in lbl for lbl in labels) else 0.0)
-        + 0.10 * (1.0 if any("chat_spike"   in lbl for lbl in labels) else 0.0)
-    )
-
-
 def _score_windows(
     windows: list[tuple[float, float, list[str]]],
     samples: np.ndarray,
@@ -1586,39 +1573,22 @@ def _score_windows(
     llm_scores: list[float] | None = None,
     llm_weight: float = 0.60,
 ) -> list[tuple[float, float, list[str], float, float]]:
-    """Score each merged clip window using up to six signals.
+    """Score each candidate window using two independent arms.
 
-    Signals (all normalised to [0, 1]):
-      1. Trigger diversity     — distinct detector types that fired
-      2. Spectral excitement   — librosa spectral contrast + ZCR variance
-      3. Hype word density     — multi-language hype words in Whisper transcript
-      4. Preference similarity — cosine similarity to trained clip profile
-      5. Comedy                — swear/scream/nonsense/silence/crack/chat triggers
-                                 blended with comedy profile similarity when available
-      6. LLM score (optional)  — Ollama virality score; blended in post-hoc when available
-    Weights (four scenarios):
-      pref + comedy profile:  25% div  20% spec  10% hype  15% pref  30% comedy
-      pref only:              30% div  25% spec  10% hype  15% pref  20% comedy
-      comedy profile only:    30% div  25% spec  10% hype  35% comedy
-      neither:                35% div  30% spec  10% hype  25% comedy
-    When llm_scores[i] > 0: final = 0.75 * weighted + 0.25 * llm_score
+    Audio arm (diversity 40% + spectral 35% + hype 25%) → sw_score in [0, 1]
+    LLM arm   (comedy, context, meaning)                 → llm_score in [0, 1]
 
-    Returns 5-tuples: (start, end, labels, sw_score, comedy_score).
+    Final composite = llm_weight × llm_score + (1 - llm_weight) × sw_score
+    When no LLM score available: composite = sw_score
+
+    Returns 5-tuples: (start, end, labels, sw_score, composite_score).
     """
     import librosa  # lazy import — only needed for Smart Clip
-
-    clip_profile   = _trainer.load_profile()
-    has_pref       = clip_profile is not None
-    comedy_profile = clip_profile.get("profile", {}).get("comedy") if has_pref else None
-    has_comedy     = comedy_profile is not None
 
     n = len(windows)
     diversity_raw = np.zeros(n)
     spectral_raw  = np.zeros(n)
     hype_raw      = np.zeros(n)
-    pref_raw      = np.zeros(n)
-
-    s_ = _settings.load() if has_pref else {}
 
     for i, (start, end, labels) in enumerate(windows):
         # --- 1. Trigger diversity ---
@@ -1649,52 +1619,22 @@ def _score_windows(
                     word_hits += 1
         hype_raw[i] = word_hits / duration
 
-        # --- 4. Preference similarity ---
-        if has_pref:
-            win_feats   = _profile_clip(chunk if len(chunk) > 0 else samples, sr, s_)
-            pref_raw[i] = _trainer.preference_similarity(win_feats, clip_profile)
-
     diversity_norm = diversity_raw           # already in [0, 1]
     spectral_norm  = _minmax_norm(spectral_raw)
     hype_norm      = _minmax_norm(hype_raw)
-    # pref_raw is already [0, 1] (cosine similarity)
 
     scored: list[tuple[float, float, list[str], float, float]] = []
     for i, (start, end, labels) in enumerate(windows):
-        duration   = max(end - start, 1.0)
-        raw_comedy = _raw_comedy_score(labels)
-
-        if has_comedy:
-            win_comedy = {
-                "swear_density":       sum(1 for lbl in labels if "swear"         in lbl) / duration * 60,
-                "scream_presence":     1.0 if any("scream"       in lbl for lbl in labels) else 0.0,
-                "nonsense_density":    sum(1 for lbl in labels if "nonsense"      in lbl) / duration * 60,
-                "pitch_variance_mean": 1.0 if any("pitch_variance" in lbl for lbl in labels) else 0.0,
-                "pre_silence_count":   sum(1 for lbl in labels if "pre_silence"   in lbl) / duration * 60,
-                "voice_crack_count":   sum(1 for lbl in labels if "voice_crack"   in lbl) / duration * 60,
-                "chat_spike_density":  sum(1 for lbl in labels if "chat_spike"    in lbl) / duration * 60,
-            }
-            comedy = 0.5 * raw_comedy + 0.5 * _trainer.comedy_profile_similarity(win_comedy, clip_profile)
-        else:
-            comedy = raw_comedy
-
-        if has_pref and has_comedy:
-            score = (0.25 * diversity_norm[i] + 0.20 * spectral_norm[i]
-                     + 0.10 * hype_norm[i] + 0.15 * pref_raw[i] + 0.30 * comedy)
-        elif has_pref:
-            score = (0.30 * diversity_norm[i] + 0.25 * spectral_norm[i]
-                     + 0.10 * hype_norm[i] + 0.15 * pref_raw[i] + 0.20 * comedy)
-        elif has_comedy:
-            score = (0.30 * diversity_norm[i] + 0.25 * spectral_norm[i]
-                     + 0.10 * hype_norm[i] + 0.35 * comedy)
-        else:
-            score = (0.35 * diversity_norm[i] + 0.30 * spectral_norm[i]
-                     + 0.10 * hype_norm[i] + 0.25 * comedy)
-
+        sw_score = (
+            0.40 * diversity_norm[i]
+            + 0.35 * spectral_norm[i]
+            + 0.25 * hype_norm[i]
+        )
         if llm_scores and i < len(llm_scores) and llm_scores[i] > 0.0:
-            score = llm_weight * llm_scores[i] + (1.0 - llm_weight) * score
-
-        scored.append((start, end, labels, float(score), comedy))
+            composite = llm_weight * llm_scores[i] + (1.0 - llm_weight) * sw_score
+        else:
+            composite = sw_score
+        scored.append((start, end, labels, float(sw_score), float(composite)))
 
     return scored
 
@@ -1725,7 +1665,7 @@ def _score_fast_windows(
 
     for i, (start, end, labels) in enumerate(windows):
         # Diversity: distinct source names
-        sources = {lbl.split("(")[0].strip() for lbl in labels}
+        sources = {lbl.split(":")[0].strip() for lbl in labels}
         diversity_raw[i] = min(len(sources) / 5.0, 1.0)   # 5 possible sources
 
         # RMS peak in window
@@ -1800,17 +1740,17 @@ def _extend_comedy_clips(
     max_dur: float,
     comedy_threshold: float = 0.4,
 ) -> list:
-    """Extend the end of high-comedy clips to capture delayed laugh reactions.
+    """Extend the end of high-composite clips to capture delayed laugh reactions.
 
-    clips: 6-tuples (start, end, labels, sw_score, composite, comedy_score).
+    clips: 5-tuples (start, end, labels, sw_score, composite).
     Returns a new list with end times extended for clips above the threshold.
     """
     result = []
     for clip in clips:
-        start, end, labels, sw, composite, comedy = clip
-        if comedy > comedy_threshold:
+        start, end, labels, sw, composite = clip
+        if composite > comedy_threshold:
             new_end = min(end + tail_sec, start + max_dur)
-            result.append((start, new_end, labels, sw, composite, comedy))
+            result.append((start, new_end, labels, sw, composite))
         else:
             result.append(clip)
     return result
@@ -1853,10 +1793,124 @@ def _build_window_signal_summary(
     return "\n".join(lines[:120])
 
 
-def run_fast_clip() -> None:
+def _get_transcript_excerpt(
+    segments: list[dict],
+    start: float,
+    end: float,
+    max_chars: int = 400,
+) -> str:
+    """Return transcript text covering the clip window [start, end]."""
+    parts = []
+    for seg in segments:
+        s_start = seg.get("start", 0.0)
+        s_end   = seg.get("end",   s_start)
+        if s_end < start or s_start > end:
+            continue
+        text = seg.get("text", "").strip()
+        if text:
+            parts.append(text)
+    result = " ".join(parts)
+    return result[:max_chars]
+
+
+def _find_llm_reason(llm_segs: list[dict], start: float, end: float) -> str:
+    """Return the LLM's reason for the flagged segment most overlapping [start, end]."""
+    win_dur      = max(end - start, 1e-6)
+    best_overlap = 0.0
+    best_reason  = ""
+    for seg in llm_segs:
+        overlap = min(end, seg["end_sec"]) - max(start, seg["start_sec"])
+        if overlap / win_dur >= 0.20 and overlap > best_overlap:
+            best_overlap = overlap
+            best_reason  = seg.get("reason", "")
+    return best_reason
+
+
+def _write_manifest(
+    base: str,
+    pipeline: str,
+    video_path: str,
+    clip_records: list[dict],
+    settings_snapshot: dict,
+) -> str | None:
+    """Write a JSON manifest of the clips produced in this run.
+
+    Returns the manifest path on success, None on failure.
+    """
+    import json as _json
+    import datetime as _dt
+    ts       = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{base}_{pipeline}_manifest_{ts}.json"
+    path     = os.path.join(CLIPS_DIR, filename)
+    key_settings = {k: settings_snapshot.get(k) for k in (
+        "whisper_model", "use_llm_scoring", "llm_model",
+        "max_clips", "max_clip_duration", "min_clip_score",
+    )}
+    manifest = {
+        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "pipeline":   pipeline,
+        "video":      os.path.basename(video_path),
+        "clip_count": len(clip_records),
+        "settings":   key_settings,
+        "clips":      clip_records,
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump(manifest, fh, indent=2, ensure_ascii=False)
+        return path
+    except OSError as exc:
+        print(f"[WARNING] Could not write manifest: {exc}")
+        return None
+
+
+def _run_feedback_loop(clip_records: list[dict], settings: dict) -> None:
+    """Show each clip and prompt the user to rate it for comedy memory training.
+
+    Good → comedy_memory.json positive example.
+    Bad  → rejection_memory.json negative example.
+    """
+    successful = [r for r in clip_records if r.get("cut_success")]
+    if not successful:
+        return
+    ans = input("\n  Rate clips for learning? [y/N]: ").strip().lower()
+    if ans != "y":
+        return
+
+    import llm as _llm_feedback
+    print()
+    for rec in successful:
+        print(f"  Clip {rec['rank']}: {rec['start_fmt']} → {rec['end_fmt']}  "
+              f"(score {rec.get('score_composite', 0.0):.2f})")
+        if rec.get("llm_reason"):
+            print(f"  LLM: {rec['llm_reason']}")
+        if rec.get("transcript_excerpt"):
+            excerpt = rec["transcript_excerpt"][:120].replace("\n", " ")
+            print(f"  \"{excerpt}\"")
+        print("  [g] Good  [b] Bad  [s] Skip  [q] Quit rating")
+        choice = input("  > ").strip().lower()
+        print()
+        if choice == "q":
+            break
+        elif choice == "g":
+            why = input("  Why is it funny? (or Enter to skip): ").strip()
+            _llm_feedback.add_positive_feedback(
+                rec.get("transcript_excerpt", ""),
+                why or "good clip",
+            )
+            print("  ✓ Added to comedy memory.\n")
+        elif choice == "b":
+            why = input("  Why is it bad? (or Enter to skip): ").strip()
+            _llm_feedback.add_negative_feedback(
+                rec.get("transcript_excerpt", ""),
+                why or "not funny",
+            )
+            print("  ✓ Added to rejection memory.\n")
+
+
+def run_fast_clip(dry_run: bool = False) -> None:
     """Fast-clip pipeline — called from main.py."""
     print("\n" + "=" * 60)
-    print("  Sundown — Fast Clip")
+    print("  Sundown — Fast Clip" + (" (DRY RUN)" if dry_run else ""))
     print("=" * 60)
 
     # 1. Pick file
@@ -1879,9 +1933,11 @@ def run_fast_clip() -> None:
     voice_thresh   = float(s.get("voice_excitement_threshold", 2.0))
     max_clip_dur   = float(s.get("max_clip_duration",      50.0))
     trim_to_peak   = bool(s.get("clip_trim_to_peak",       True))
-    whisper_dev    = _resolve_whisper_device(s.get("whisper_device", "auto"))
     whisper_lang   = s.get("whisper_language", "auto")
     total_steps    = 9 if use_whisper else 8
+
+    if _logger:
+        _logger.log_pipeline_start(video_path, s)
 
     os.makedirs(CLIPS_DIR, exist_ok=True)
 
@@ -1913,6 +1969,11 @@ def run_fast_clip() -> None:
         all_triggers: list[Trigger] = rms_triggers + laugh_triggers + onset_triggers + voice_triggers
         print(f"       Found: {len(rms_triggers)} RMS | {len(laugh_triggers)} laughter | "
               f"{len(onset_triggers)} novelty | {len(voice_triggers)} voice excitement")
+        if _logger:
+            _logger.log_audio_signals({
+                "rms": len(rms_triggers), "laughter": len(laugh_triggers),
+                "onset": len(onset_triggers), "voice": len(voice_triggers),
+            })
 
         if not all_triggers:
             print("\n[INFO] No trigger moments detected. Try lowering thresholds in Settings.")
@@ -1924,10 +1985,11 @@ def run_fast_clip() -> None:
         print(f"       {len(windows)} candidate window(s).")
 
         # 7. Targeted Whisper — only on candidate window slices
+        fast_segments: list[dict] = []
         if use_whisper:
             _progress(7, total_steps, "Transcribing candidate windows (Whisper)")
-            kw_triggers, _ = _whisper_on_windows(
-                samples, sr, windows, model_name, whisper_dev, whisper_lang,
+            kw_triggers, fast_segments = _whisper_on_windows(
+                samples, sr, windows, model_name, whisper_lang,
                 tmp_dir, video_path, use_cache=use_cache
             )
             # Re-merge with keyword triggers added
@@ -1954,9 +2016,10 @@ def run_fast_clip() -> None:
         print(f"       Top {len(selected)} of {len(windows)} window(s) selected by score.")
 
         # 9. Cut clips
-        _progress(total_steps, total_steps, "Cutting clips")
-        base = os.path.splitext(os.path.basename(video_path))[0]
-        cut_count = 0
+        _progress(total_steps, total_steps, "Cutting clips" + (" (dry run)" if dry_run else ""))
+        base         = os.path.splitext(os.path.basename(video_path))[0]
+        cut_count    = 0
+        clip_records: list[dict] = []
         for rank, (start, end, labels, score) in enumerate(selected, start=1):
             if trim_to_peak:
                 start, end = _trim_to_peak(start, end, samples, sr, pre, post, max_clip_dur)
@@ -1965,17 +2028,47 @@ def run_fast_clip() -> None:
             print(f"\n  Clip {rank}/{len(selected)}: {_fmt_time(start)} → {_fmt_time(end)}  (score {score:.2f})")
             for lbl in labels:
                 print(f"    ↳ {lbl}")
-            if _cut_clip(video_path, start, end, out_name):
-                print(f"    ✓ Saved → {out_name}")
-                cut_count += 1
+            if _logger:
+                _logger.log_clip_selected(rank, start, end, score, score, 0.0, labels)
+            if dry_run:
+                print(f"    [DRY RUN] Would save → {out_name}")
+                cut_success = True
+                cut_count  += 1
+            else:
+                cut_success = _cut_clip(video_path, start, end, out_name)
+                if cut_success:
+                    print(f"    ✓ Saved → {out_name}")
+                    cut_count += 1
+            clip_records.append({
+                "rank":               rank,
+                "start_sec":          round(start, 2),
+                "end_sec":            round(end,   2),
+                "start_fmt":          _fmt_time(start),
+                "end_fmt":            _fmt_time(end),
+                "filename":           os.path.basename(out_name),
+                "score_composite":    round(score, 4),
+                "score_sw":           round(score, 4),
+                "score_heat":         0.0,
+                "labels":             labels,
+                "transcript_excerpt": _get_transcript_excerpt(fast_segments, start, end),
+                "llm_reason":         "",
+                "cut_success":        cut_success,
+            })
 
-    print(f"\n[SUCCESS] {cut_count}/{len(selected)} clip(s) saved to '{CLIPS_DIR}/'.")
+    dry_tag = " (dry run — no files cut)" if dry_run else ""
+    print(f"\n[SUCCESS] {cut_count}/{len(selected)} clip(s){dry_tag}.")
 
-    if cut_count > 0:
-        _handle_original(video_path)
+    if not dry_run:
+        if clip_records:
+            manifest_path = _write_manifest(base, "fast", video_path, clip_records, s)
+            if manifest_path:
+                print(f"  Manifest → {manifest_path}")
+        _run_feedback_loop(clip_records, s)
+        if cut_count > 0:
+            _handle_original(video_path)
 
 
-def run_smart_clip() -> None:
+def run_smart_clip(dry_run: bool = False) -> None:
     """Smart-clip pipeline — LLM + audio dual-arm detection with heat model fusion.
 
     Pipeline order:
@@ -1989,7 +2082,7 @@ def run_smart_clip() -> None:
       14. Score, deduplicate, cut
     """
     print("\n" + "=" * 60)
-    print("  Sundown — Smart Clip")
+    print("  Sundown — Smart Clip" + (" (DRY RUN)" if dry_run else ""))
     print("=" * 60)
 
     # 1. Pick file
@@ -2012,7 +2105,6 @@ def run_smart_clip() -> None:
     voice_thresh   = float(s.get("voice_excitement_threshold", 2.0))
     max_clip_dur   = float(s.get("max_clip_duration",      50.0))
     trim_to_peak   = bool(s.get("clip_trim_to_peak",       True))
-    whisper_dev    = _resolve_whisper_device(s.get("whisper_device", "auto"))
     whisper_lang   = s.get("whisper_language", "auto")
     heat_decay     = float(s.get("smart_heat_decay",        0.92))
     heat_thresh    = float(s.get("smart_heat_threshold",    0.55))
@@ -2022,6 +2114,9 @@ def run_smart_clip() -> None:
     win_min_score  = float(s.get("smart_score_window_min",  0.20))
     use_llm        = bool(s.get("use_llm_scoring",    True))
     llm_weight     = float(s.get("llm_window_weight", 0.60))
+
+    if _logger:
+        _logger.log_pipeline_start(video_path, s)
     # Step counts:  whisper+llm=15  whisper-only=14  no-whisper=13
     # Audio detectors start after transcription (if any); LLM runs after audio.
     total_steps  = 15 if (use_llm and use_whisper) else (14 if use_whisper else 13)
@@ -2040,8 +2135,14 @@ def run_smart_clip() -> None:
         transcript_segments: list[dict] = []
         if use_whisper:
             _progress(2, total_steps, "Transcribing full VOD (whisper.cpp)")
+            if use_cache and _load_transcript_cache(video_path) is not None:
+                if _logger:
+                    _logger.log_whisper_cache_hit(video_path)
+            else:
+                if _logger:
+                    _logger.log_whisper_start(model_name, video_duration)
             transcript_segments = _transcribe_full_vod(
-                wav_path, model_name, whisper_dev, whisper_lang, video_path, use_cache
+                wav_path, model_name, whisper_lang, video_path, use_cache
             )
             print(f"       {len(transcript_segments)} segment(s) transcribed.")
 
@@ -2118,14 +2219,25 @@ def run_smart_clip() -> None:
             all_triggers += swear_triggers + nonsense_triggers
             print(f"       {len(swear_triggers)} swear(s), {len(nonsense_triggers)} nonsense tag(s).")
 
+        if _logger:
+            _logger.log_audio_signals({
+                "rms": len(rms_triggers), "laughter": len(laugh_triggers),
+                "onset": len(onset_triggers), "voice": len(voice_triggers),
+                "rise": len(rise_triggers), "scream": len(scream_triggers),
+                "silence": len(silence_triggers), "crack": len(crack_triggers),
+                "pitch": len(pitch_triggers), "chat": len(chat_triggers),
+                "swear": len(swear_triggers), "nonsense": len(nonsense_triggers),
+            })
+
         trigger_windows = _merge_triggers(
             all_triggers, pre=pre, post=post, max_duration=max_clip_dur
         ) if all_triggers else []
         print(f"       Trigger arm: {len(trigger_windows)} window(s).")
 
         # Ollama selects clip moments — runs after audio so window_signals is available
-        llm_segs:    list[dict]  = []
-        llm_windows: list[tuple] = []
+        llm_segs:         list[dict]  = []
+        llm_suggestions:  list[dict]  = []
+        llm_windows:      list[tuple] = []
         if use_llm and use_whisper:
             import llm as _llm
             _progress(audio_offset + 9, total_steps, "Asking Ollama to select clip moments")
@@ -2135,7 +2247,7 @@ def run_smart_clip() -> None:
                     scream_triggers, crack_triggers, silence_triggers, nonsense_triggers,
                     video_duration,
                 )
-                llm_segs = _llm.analyze_transcript(
+                llm_segs, llm_suggestions = _llm.analyze_transcript(
                     transcript_segments, s, window_signals=window_signals
                 )
                 if llm_segs:
@@ -2202,8 +2314,8 @@ def run_smart_clip() -> None:
             return 0.0
 
         combined = [
-            (s_c, e_c, lbl, sw, 0.5 * sw + 0.5 * _extract_peak_heat(lbl), cs)
-            for s_c, e_c, lbl, sw, cs in scored
+            (s_c, e_c, lbl, sw, 0.5 * composite + 0.5 * _extract_peak_heat(lbl))
+            for s_c, e_c, lbl, sw, composite in scored
         ]
         combined.sort(key=lambda w: w[4], reverse=True)
 
@@ -2236,29 +2348,92 @@ def run_smart_clip() -> None:
         comedy_tail = float(s.get("comedy_tail_sec", 6.0))
         selected = _extend_comedy_clips(selected, comedy_tail, max_clip_dur)
 
-        _progress(total_steps, total_steps, "Cutting clips")
+        _progress(total_steps, total_steps, "Cutting clips" + (" (dry run)" if dry_run else ""))
         selected_by_time = sorted(selected, key=lambda w: w[0])
-        base      = os.path.splitext(os.path.basename(video_path))[0]
-        cut_count = 0
+        base         = os.path.splitext(os.path.basename(video_path))[0]
+        cut_count    = 0
+        clip_records: list[dict] = []
 
-        for i, (start, end, labels, sw_score, composite, comedy_score) in enumerate(selected_by_time, start=1):
+        for i, (start, end, labels, sw_score, composite) in enumerate(selected_by_time, start=1):
             if trim_to_peak:
                 start, end = _trim_to_peak(start, end, samples, sr, pre, post, max_clip_dur)
             out_name = os.path.join(
                 CLIPS_DIR,
                 f"{base}_smart_{i:02d}_{_fmt_time(start)}.mp4",
             )
+            peak_heat = _extract_peak_heat(labels)
             print(f"\n  Clip {i}/{len(selected_by_time)}: "
                   f"{_fmt_time(start)} → {_fmt_time(end)}  "
                   f"(composite: {composite:.2f}  sw: {sw_score:.2f}  "
-                  f"heat: {_extract_peak_heat(labels):.2f}  comedy: {comedy_score:.2f})")
+                  f"heat: {peak_heat:.2f})")
             for lbl in labels:
                 print(f"    ↳ {lbl}")
-            if _cut_clip(video_path, start, end, out_name):
-                print(f"    ✓ Saved → {out_name}")
-                cut_count += 1
+            if _logger:
+                _logger.log_clip_selected(
+                    i, start, end, composite, sw_score, peak_heat, labels,
+                )
+            if dry_run:
+                print(f"    [DRY RUN] Would save → {out_name}")
+                cut_success = True
+                cut_count  += 1
+            else:
+                cut_success = _cut_clip(video_path, start, end, out_name)
+                if cut_success:
+                    print(f"    ✓ Saved → {out_name}")
+                    cut_count += 1
+            clip_records.append({
+                "rank":               i,
+                "start_sec":          round(start, 2),
+                "end_sec":            round(end,   2),
+                "start_fmt":          _fmt_time(start),
+                "end_fmt":            _fmt_time(end),
+                "filename":           os.path.basename(out_name),
+                "score_composite":    round(composite, 4),
+                "score_sw":           round(sw_score,  4),
+                "score_heat":         round(peak_heat, 4),
+                "labels":             labels,
+                "transcript_excerpt": _get_transcript_excerpt(transcript_segments, start, end),
+                "llm_reason":         _find_llm_reason(llm_segs, start, end),
+                "cut_success":        cut_success,
+            })
 
-    print(f"\n[SUCCESS] {cut_count}/{len(selected)} clip(s) saved to '{CLIPS_DIR}/'.")
+    dry_tag = " (dry run — no files cut)" if dry_run else ""
+    print(f"\n[SUCCESS] {cut_count}/{len(selected)} clip(s){dry_tag}.")
 
-    if cut_count > 0:
+    if not dry_run:
+        if clip_records:
+            manifest_path = _write_manifest(base, "smart", video_path, clip_records, s)
+            if manifest_path:
+                print(f"  Manifest → {manifest_path}")
+        _run_feedback_loop(clip_records, s)
+
+    if llm_suggestions:
+        print(f"\n  [Agent] {len(llm_suggestions)} setting suggestion(s) from this run:\n")
+        import settings as _settings_mod
+        s_current = _settings_mod.load()
+
+        for suggestion in llm_suggestions:
+            name      = suggestion["setting_name"]
+            current   = suggestion["current_value"]
+            proposed  = suggestion["suggested_value"]
+            reason    = suggestion["reason"]
+            direction = "↑" if proposed > current else "↓"
+
+            print(f"  {name}: {current} → {proposed} {direction}")
+            print(f"  \"{reason}\"")
+            ans = input("  Apply? [y/N]: ").strip().lower()
+
+            if ans == "y":
+                s_current[name] = proposed
+                _settings_mod.save(s_current)
+                print("  ✓ Applied.")
+                if _logger:
+                    _logger.log_suggestion_accepted(name, current, proposed, reason)
+            else:
+                print("  Skipped.")
+                if _logger:
+                    _logger.log_suggestion_rejected(name, current, proposed, reason)
+            print()
+
+    if not dry_run and cut_count > 0:
         _handle_original(video_path)

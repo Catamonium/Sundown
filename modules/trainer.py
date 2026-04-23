@@ -12,6 +12,11 @@ import tempfile
 import numpy as np
 import settings as _settings
 
+try:
+    import logger as _logger
+except ImportError:
+    _logger = None  # type: ignore[assignment]
+
 _PROJECT_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILE_PATH    = os.path.join(_PROJECT_ROOT, "configuration", "clip_profile.json")
 PROFILE_VERSION = 2        # v2 adds comedy sub-profile
@@ -224,6 +229,10 @@ def run_train() -> None:
                       f"scream: {'yes' if cf.get('scream_presence') else 'no'}  "
                       f"cracks: {cf.get('voice_crack_count', 0.0):.2f}/min")
 
+                print(f"\n       Why is this clip funny? (describe what makes it work)")
+                print(f"       Press Enter to skip and let the LLM decide.")
+                user_reason = input("       > ").strip()
+
                 # Transcribe clip for comedy memory analysis
                 try:
                     _, clip_segs = _clipper._run_whisper(
@@ -244,8 +253,39 @@ def run_train() -> None:
                 if cf.get("nonsense_density", 0)                         > 0:   audio_hints.append("nonsense")
                 if feats.get("trigger_presence", {}).get("laughter", 0)  > 0:   audio_hints.append("laughter")
 
-                # Ask LLM why this clip is funny
-                if clip_segs:
+                # User reason is ground truth — save it regardless of transcription
+                if user_reason:
+                    entry = {
+                        "clip_name":   fname,
+                        "text_sample": " ".join(
+                            seg.get("text", "").strip() for seg in clip_segs
+                        )[:300] if clip_segs else "",
+                        "why_funny":   user_reason,
+                        "user_reason": user_reason,
+                        "humor_type":  "other",
+                        "confidence":  100,
+                        "audio_hints": audio_hints,
+                        "score":       1.0,
+                        "source":      "training",
+                    }
+                    if clip_segs:
+                        import llm as _llm
+                        analysis = _llm.analyze_why_funny(
+                            _llm.format_transcript(clip_segs), audio_hints, s,
+                            user_context=user_reason,
+                        )
+                        if analysis:
+                            entry["humor_type"] = analysis.get("humor_type", "other")
+                            entry["llm_notes"]  = analysis.get("why_funny", "")
+                    new_memory_entries.append(entry)
+                    if _logger:
+                        _logger.log_training_clip(
+                            fname, entry["humor_type"], entry["why_funny"],
+                            user_reason, entry["confidence"],
+                        )
+                    print(f"       Saved: [{entry['humor_type']}] {user_reason[:80]}...")
+
+                elif clip_segs:
                     import llm as _llm
                     analysis = _llm.analyze_why_funny(
                         _llm.format_transcript(clip_segs), audio_hints, s
@@ -263,11 +303,17 @@ def run_train() -> None:
                             "score":       1.0,
                             "source":      "training",
                         })
+                        if _logger:
+                            _logger.log_training_clip(
+                                fname, analysis["humor_type"], analysis["why_funny"],
+                                "", analysis["confidence"],
+                            )
                         print(f"       LLM: [{analysis['humor_type']}] {analysis['why_funny'][:80]}...")
                     else:
                         print("       LLM: skipped (low confidence or Ollama not running)")
+
                 else:
-                    print("       LLM: skipped (transcription failed)")
+                    print("       Skipped: no user reason and transcription failed.")
 
                 try:
                     os.remove(wav_path)

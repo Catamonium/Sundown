@@ -79,15 +79,17 @@ DEFAULTS: dict = {
     "min_clip_score":               0.30,
     "use_llm_scoring":              True,
     "llm_window_weight":            0.60,
-    "llm_model":                    "llama3.2",
+    "llm_model":                    "qwen3.5:9b",
     "llm_host":                     "http://localhost:11434",
     "llm_timeout":                  120,
+    "llm_max_iterations":           8,
     "comedy_chat_spike_factor":     3.0,
     "comedy_scream_min_pitch":      300,
     "comedy_scream_max_duration":   1.8,
     "comedy_pitch_variance_thresh": 80.0,
     "comedy_silence_min_sec":       0.3,
     "comedy_silence_max_sec":       2.0,
+    "debug_mode":                   False,
 }
 
 
@@ -229,7 +231,10 @@ def show_menu() -> None:
 
         print("\n  ── AI Scoring (Ollama) ──────────────────────────────────")
         llm_on = s.get("use_llm_scoring", False)
-        print(_row("3", "LLM scoring", f"{'on' if llm_on else 'off'}  model={s.get('llm_model', 'llama3.2')}", "Ollama virality scoring — free & local, no API key needed"))
+        print(_row("3", "LLM scoring", f"{'on' if llm_on else 'off'}  model={s.get('llm_model', 'qwen3.5:9b')}", "Ollama virality scoring — free & local, no API key needed"))
+
+        print("\n  ── Debug ────────────────────────────────────────────────")
+        print(_row("v", "Debug logging", "on" if s.get("debug_mode", False) else "off", "write raw LLM prompts and full responses to log file"))
 
         print("\n  ── Account ──────────────────────────────────────────────")
         print(_row("q", "Erase Twitch credentials", "", "revoke and remove stored auth token"))
@@ -425,7 +430,7 @@ def show_menu() -> None:
                 if sub == "1":
                     s["use_llm_scoring"] = False; save(s); print("  LLM scoring disabled.")
                 elif sub == "2":
-                    raw = input(f"  Ollama model [{s.get('llm_model', 'llama3.2')}]: ").strip()
+                    raw = input(f"  Ollama model [{s.get('llm_model', 'qwen3.5:9b')}]: ").strip()
                     if raw: s["llm_model"] = raw
                     raw = input(f"  Ollama host [{s.get('llm_host', 'http://localhost:11434')}]: ").strip()
                     if raw: s["llm_host"] = raw
@@ -433,8 +438,8 @@ def show_menu() -> None:
             else:
                 print("\n  LLM scoring uses Ollama to score clips for virality (hook, engagement, value, shareability).\n"
                       "  Requires Ollama: https://ollama.com\n"
-                      "  Recommended: llama3.2  phi4-mini  gemma3:4b\n")
-                raw = input(f"  Ollama model [{s.get('llm_model', 'llama3.2')}]: ").strip()
+                      "  Recommended: qwen3.5:9b  phi4-mini  gemma3:4b\n")
+                raw = input(f"  Ollama model [{s.get('llm_model', 'qwen3.5:9b')}]: ").strip()
                 if raw: s["llm_model"] = raw
                 raw = input(f"  Ollama host [{s.get('llm_host', 'http://localhost:11434')}]: ").strip()
                 if raw: s["llm_host"] = raw
@@ -446,6 +451,17 @@ def show_menu() -> None:
                 print(f"  LLM scoring enabled (model: {s['llm_model']}, host: {s['llm_host']}).\n"
                       f"  Make sure Ollama is running and the model is pulled:\n"
                       f"    ollama pull {s['llm_model']}")
+
+        elif choice == "v":
+            s["debug_mode"] = not s.get("debug_mode", False)
+            save(s)
+            state = "on" if s["debug_mode"] else "off"
+            print(f"  Debug logging is now {state}.")
+            try:
+                import logger as _logger
+                _logger.set_debug(s["debug_mode"])
+            except Exception:
+                pass
 
         elif choice == "q":
             import downloader as _downloader

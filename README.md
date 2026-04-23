@@ -26,7 +26,7 @@ pip install streamlink yt-dlp requests ffmpeg-python numpy librosa
 **External tools — not pip packages**
 - [ffmpeg](https://ffmpeg.org/download.html) — must be on PATH
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — see Whisper setup section below
-- [Ollama](https://ollama.com) — runs the local LLM for Smart Clip. Pull your preferred model: `ollama pull llama3.2`
+- [Ollama](https://ollama.com) — runs the local LLM for Smart Clip. Pull your preferred model: `ollama pull qwen3.5:9b`
 - [Twitch CLI](https://dev.twitch.tv/docs/cli/) — used for authentication setup
 
 ---
@@ -121,7 +121,7 @@ Run `python main.py` and select **[4] Settings** for the interactive editor. Key
 | `whisper_model` | `medium` | `small` or `medium` recommended for Spanish |
 | `whisper_language` | `es` | ISO language code or `auto` |
 | `use_llm_scoring` | `true` | Enable Ollama-based segment selection |
-| `llm_model` | `llama3.2` | Ollama model name |
+| `llm_model` | `qwen3.5:9b` | Ollama model name |
 | `max_clips` | `10` | Max clips produced per run |
 | `max_clip_duration` | `50` | Hard cap per clip in seconds |
 

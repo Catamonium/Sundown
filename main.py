@@ -14,6 +14,7 @@ import downloader   # noqa: E402
 import clipper      # noqa: E402
 import settings     # noqa: E402
 import trainer      # noqa: E402
+import logger       # noqa: E402
 
 
 # ------------------------------------------------------------
@@ -43,7 +44,7 @@ def _check_ffmpeg() -> None:
 def _check_whisper_cpp() -> None:
     if clipper._WHISPER_CPP_BIN is None:
         print("\n[WARNING] whisper.cpp binary not found — transcription disabled.\n"
-              "          Place main.exe in: AutoClipper/Whisper/\n")
+              "          Place whisper-cli.exe (or main.exe) in: Whisper/\n")
 
 
 # ------------------------------------------------------------
@@ -66,6 +67,8 @@ def action_download_vod() -> None:
 
 def action_fast_clip()        -> None: clipper.run_fast_clip()
 def action_smart_clip()       -> None: clipper.run_smart_clip()
+def action_fast_clip_dry()    -> None: clipper.run_fast_clip(dry_run=True)
+def action_smart_clip_dry()   -> None: clipper.run_smart_clip(dry_run=True)
 def action_settings()         -> None: settings.show_menu()
 def action_setup_twitch_cli() -> None: downloader.setup_twitch_cli()
 
@@ -102,6 +105,8 @@ _MENU: dict[str, tuple[str, callable]] = {
     "4": ("Settings",                                       action_settings),
     "5": ("Set up Twitch CLI auth",                         action_setup_twitch_cli),
     "6": ("Train Smart Clip  (drop clips into training/)",  action_train_smart_clip),
+    "7": ("Fast Clip  — dry run  (score only, no cutting)", action_fast_clip_dry),
+    "8": ("Smart Clip — dry run  (score only, no cutting)", action_smart_clip_dry),
 }
 
 
@@ -124,11 +129,15 @@ def main() -> None:
     _check_ffmpeg()
     _check_whisper_cpp()
 
+    s = settings.load()
+    logger.init(debug=s.get("debug_mode", False))
+
     while True:
         show_menu()
         choice = input("Select an option: ").strip()
         if choice == "0":
             print("\nGoodbye!\n")
+            logger.close()
             sys.exit(0)
         if choice in _MENU:
             _MENU[choice][1]()

@@ -1,4 +1,4 @@
-# AutoClipper — Claude Instructions
+# Sundown — Claude Instructions
 
 ## Hard Constraints
 

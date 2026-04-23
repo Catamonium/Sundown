@@ -16,9 +16,14 @@ clips/
 input/
 
 # ── Sensitive config ─────────────────────────────────────────
+configuration/settings.json
+!configuration/settings.example.json
 configuration/twitch_credentials.json
 configuration/comedy_memory.json
+configuration/rejection_memory.json
+configuration/clip_profile.json
 configuration/transcript_cache/
+configuration/logs/
 
 # ── Training clips (user-provided, not for the repo) ─────────
 training/*.mp4

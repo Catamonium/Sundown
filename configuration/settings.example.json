@@ -30,13 +30,15 @@
     "min_clip_score": 0.3,
     "use_llm_scoring": true,
     "llm_window_weight": 0.6,
-    "llm_model": "llama3.2",
+    "llm_model": "qwen3.5:9b",
     "llm_host": "http://localhost:11434",
     "llm_timeout": 120,
+    "llm_max_iterations": 8,
     "comedy_chat_spike_factor": 3.0,
     "comedy_scream_min_pitch": 300,
     "comedy_scream_max_duration": 1.8,
     "comedy_pitch_variance_thresh": 80.0,
     "comedy_silence_min_sec": 0.3,
-    "comedy_silence_max_sec": 2.0
+    "comedy_silence_max_sec": 2.0,
+    "debug_mode": false
 }
